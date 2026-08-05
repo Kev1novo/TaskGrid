@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: taskgrid-pg
+    environment:
+      POSTGRES_PASSWORD: dev123
+      POSTGRES_DB: taskgrid
+    ports:
+      - "5432:5432"
+    volumes:
+      - taskgrid_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: taskgrid-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - taskgrid_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: taskgrid-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - taskgrid_es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\"' || curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"yellow\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  taskgrid_pg_data:
+  taskgrid_redis_data:
+  taskgrid_es_data:

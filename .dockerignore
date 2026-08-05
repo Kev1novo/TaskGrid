@@ -1,0 +1,17 @@
+.venv/
+venv/
+.env
+.env.*
+*.log
+__pycache__/
+*.py[cod]
+.git
+.gitignore
+.claude/
+docs/
+scripts/
+docker/
+docker-compose*.yml
+staticfiles/
+*.md
+*.pem

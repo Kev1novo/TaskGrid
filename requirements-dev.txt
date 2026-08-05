@@ -1,0 +1,13 @@
+# 开发/测试专用依赖（生产镜像用 requirements-prod.txt，不装这些）
+-r requirements.txt
+
+# 测试
+pytest==9.1.1
+pytest-django==4.12.0
+pytest-cov==7.1.0
+
+# 代码规范
+black==26.5.1
+isort==8.0.1
+flake8==7.3.0
+pre-commit==4.6.1
