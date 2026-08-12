@@ -12,6 +12,11 @@ from elasticsearch import Elasticsearch
 
 logger = logging.getLogger(__name__)
 
+# ——————————————————————————————————————————————————————
+# ES 索引结构定义（类似建表语句）
+# keyword 类型 → 精确匹配（用于过滤：task_id、status、owner_id）
+# text 类型    → 全文检索（用于搜索：output、error）
+# ——————————————————————————————————————————————————————
 INDEX_MAPPING = {
     "settings": {
         "number_of_shards": 1,
@@ -24,9 +29,9 @@ INDEX_MAPPING = {
             "owner_id": {"type": "integer"},
             "worker_id": {"type": "keyword"},
             "status": {"type": "keyword"},
-            "log_type": {"type": "keyword"},  # run / error
-            "output": {"type": "text"},
-            "error": {"type": "text"},
+            "log_type": {"type": "keyword"},  # "run"=正常执行 / "error"=有错误
+            "output": {"type": "text"},  # 代码执行输出 → 可以被全文搜索
+            "error": {"type": "text"},  # 错误信息 → 可以被全文搜索
             "duration": {"type": "float"},
             "created_at": {"type": "date"},
         },
@@ -35,11 +40,12 @@ INDEX_MAPPING = {
 
 
 def get_client():
+    """获取 ES 客户端连接。"""
     return Elasticsearch(settings.ELASTICSEARCH_URL)
 
 
 def ensure_index():
-    """索引不存在则创建（幂等）。"""
+    """索引不存在则创建（幂等——第二次调用不做任何事）。"""
     index = settings.ELASTICSEARCH_INDEX
     es = get_client()
     if not es.indices.exists(index=index):
@@ -48,7 +54,9 @@ def ensure_index():
 
 
 def index_task_log(task):
-    """把一次任务执行的结果写入 ES。失败不影响任务本身。"""
+    """把一次任务执行的结果写入 ES 索引，供后续检索。
+    ⚠️ 降级设计：写入失败只记日志，绝不影响任务主流程。
+    """
     try:
         ensure_index()
         result = task.result if isinstance(task.result, dict) else {}
@@ -66,11 +74,24 @@ def index_task_log(task):
         }
         get_client().index(index=settings.ELASTICSEARCH_INDEX, document=doc)
     except Exception:
+        # 只记日志，不抛异常——ES 挂了任务照常完成
         logger.exception("Failed to index task log to ES for task %s", task.id)
 
 
 def search_logs(q=None, task_id=None, owner_id=None, status=None, size=50):
-    """按关键词/任务/用户/状态检索日志，按时间倒序。"""
+    """按关键词/任务/用户/状态检索日志，按时间倒序。
+
+    参数：
+      q        全文关键词（匹配 output、error、task_name）
+      task_id  精确查某个任务的所有日志
+      owner_id 按创建者过滤（权限隔离的关键——用户只能搜自己的）
+      status   按任务状态过滤（如只搜失败的）
+      size     返回条数上限
+
+    返回格式：
+      [{...fields..., "_id": "es_doc_id", "_score": 2.5}, ...]
+    """
+    # 构建 ES 的 bool 查询条件
     must = []
     if q:
         must.append({"multi_match": {"query": q, "fields": ["output", "error", "task_name"]}})
@@ -84,14 +105,17 @@ def search_logs(q=None, task_id=None, owner_id=None, status=None, size=50):
     body = {
         "query": {"bool": {"must": must}} if must else {"match_all": {}},
         "size": size,
-        "sort": [{"created_at": "desc"}],
+        "sort": [{"created_at": "desc"}],  # 最新的排前面
     }
+
+    # 调用 ES 搜索
     resp = get_client().search(index=settings.ELASTICSEARCH_INDEX, body=body)
     return [_source(h) for h in resp["hits"]["hits"]]
 
 
 def _source(hit):
+    """把 ES 返回的原始结果整理成字典，附加 _id 和 _score。"""
     src = dict(hit["_source"])
-    src["_id"] = hit["_id"]
-    src["_score"] = hit.get("_score")
+    src["_id"] = hit["_id"]  # 文档 ID
+    src["_score"] = hit.get("_score")  # 相关度分数（全文搜索才有意义）
     return src
