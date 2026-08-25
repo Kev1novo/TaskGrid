@@ -90,7 +90,64 @@ def test_cancel_pending(auth_client, user):
     assert task.status == Task.Status.CANCELLED
 
 
-def test_cancel_running_400(auth_client, user):
+def test_cancel_running_sets_marker(auth_client, user):
     task = Task.objects.create(name="t", owner=user, code="print(1)", status=Task.Status.RUNNING)
     resp = auth_client.post(f"{TASKS}{task.id}/cancel/")
+    assert resp.status_code == 202
+    task.refresh_from_db()
+    # 状态保持 RUNNING，但标记了 cancel_requested_at，等 worker 轮询后异步取消
+    assert task.status == Task.Status.RUNNING
+    assert task.cancel_requested_at is not None
+
+
+def test_cancel_terminal_400(auth_client, user):
+    task = Task.objects.create(name="t", owner=user, code="print(1)", status=Task.Status.SUCCESS)
+    resp = auth_client.post(f"{TASKS}{task.id}/cancel/")
     assert resp.status_code == 400
+
+
+def test_retry_creates_new_task(auth_client, user, monkeypatch):
+    """重试终态任务 → 201，新任务复用原参数，id 不同，status=pending"""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "apps.tasks.views.select_node",
+        lambda strategy="least_loaded": SimpleNamespace(name="node1"),
+    )
+    original = Task.objects.create(
+        name="t",
+        owner=user,
+        code="print(1)",
+        params={"timeout": 10},
+        priority=Task.Priority.HIGH,
+        status=Task.Status.SUCCESS,
+    )
+    resp = auth_client.post(f"{TASKS}{original.id}/retry/")
+    assert resp.status_code == 201
+    assert resp.data["id"] != str(original.id)
+    assert resp.data["name"] == "t"
+    assert resp.data["code"] == "print(1)"
+    assert resp.data["status"] == "pending"
+    assert resp.data["priority"] == Task.Priority.HIGH
+    assert resp.data["params"] == {"timeout": 10}
+    assert resp.data["worker_id"] == "node1"
+
+
+def test_retry_pending_400(auth_client, user):
+    task = Task.objects.create(name="t", owner=user, code="print(1)", status=Task.Status.PENDING)
+    resp = auth_client.post(f"{TASKS}{task.id}/retry/")
+    assert resp.status_code == 400
+
+
+def test_retry_running_400(auth_client, user):
+    task = Task.objects.create(name="t", owner=user, code="print(1)", status=Task.Status.RUNNING)
+    resp = auth_client.post(f"{TASKS}{task.id}/retry/")
+    assert resp.status_code == 400
+
+
+def test_retry_other_denied(auth_client, user):
+    task = Task.objects.create(
+        name="t", owner=_other_user(), code="print(1)", status=Task.Status.FAILED
+    )
+    resp = auth_client.post(f"{TASKS}{task.id}/retry/")
+    assert resp.status_code == 404

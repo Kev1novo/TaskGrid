@@ -14,6 +14,7 @@ from apps.users.models import User
 #       → 代码报错 / OOM → FAILED
 #       → 超过时限 → TIMEOUT
 #     用户在排队阶段取消 → CANCELLED
+#     用户在执行阶段取消 → 设 cancel_requested_at 标记 → worker 轮询到 → 强杀 → CANCELLED
 #
 # 关键设计：status 不是随便改的字段，只能通过 transit() 改
 #   → "状态机收口"：所有状态变更走同一道门，非法转移直接报错
@@ -27,7 +28,7 @@ class Task(models.Model):
         SUCCESS = "success", "成功"  # 代码正常退出（exit_code=0）
         FAILED = "failed", "失败"  # 代码报错 / OOM 被系统杀死
         TIMEOUT = "timeout", "超时"  # 超过时限，被强制终止
-        CANCELLED = "cancelled", "已取消"  # 用户在排队阶段手动取消
+        CANCELLED = "cancelled", "已取消"  # 排队时手动取消 / 执行时请求取消后强杀
 
     class Priority(models.IntegerChoices):
         LOW = 1, "低"
@@ -67,6 +68,9 @@ class Task(models.Model):
     # ——— 执行结果 ———
     result = models.JSONField("执行结果", default=dict, blank=True)  # 存 output + duration
     error_message = models.TextField("错误信息", blank=True)  # 失败时填原因
+    cancel_requested_at = models.DateTimeField(
+        "取消请求时间", null=True, blank=True
+    )  # 用户请求取消 RUNNING 任务时设置，executor 轮询检测
 
     # ——— 时间戳 ———
     started_at = models.DateTimeField("开始时间", null=True, blank=True)
@@ -96,7 +100,7 @@ class Task(models.Model):
 
         合法转移：
           PENDING  → RUNNING / CANCELLED
-          RUNNING  → SUCCESS / FAILED / TIMEOUT
+          RUNNING  → SUCCESS / FAILED / TIMEOUT / CANCELLED（用户手动取消）
           SUCCESS   → 不可再变（终态）
           FAILED    → 不可再变（终态）
           TIMEOUT   → 不可再变（终态）
@@ -107,7 +111,12 @@ class Task(models.Model):
         # 关卡表：当前状态 → 允许去的状态列表
         allowed = {
             self.Status.PENDING: [self.Status.RUNNING, self.Status.CANCELLED],
-            self.Status.RUNNING: [self.Status.SUCCESS, self.Status.FAILED, self.Status.TIMEOUT],
+            self.Status.RUNNING: [
+                self.Status.SUCCESS,
+                self.Status.FAILED,
+                self.Status.TIMEOUT,
+                self.Status.CANCELLED,
+            ],
             # 以下都是终态，不允许再跳走
             self.Status.SUCCESS: [],
             self.Status.FAILED: [],

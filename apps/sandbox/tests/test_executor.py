@@ -54,11 +54,19 @@ def test_oom_detected():
 
 
 def test_timeout_kills_container():
-    container = _container(
-        wait_results=[requests.exceptions.ReadTimeout, {"StatusCode": -1}],
-        logs="",
-    )
-    result = SandboxExecutor(client=_client(container)).execute(code="x", timeout=1)
+    """超时：executor 轮询直到 deadline 到期，强杀容器并返回 timed_out=True"""
+    container = MagicMock()
+
+    def _wait(timeout=None):
+        # kill 之前一直抛 ReadTimeout（模拟容器还在跑），kill 之后返回退出码
+        if container.kill.called:
+            return {"StatusCode": -1}
+        raise requests.exceptions.ReadTimeout()
+
+    container.wait.side_effect = _wait
+    container.logs.return_value = b""
+
+    result = SandboxExecutor(client=_client(container)).execute(code="x", timeout=0.1)
     assert result.timed_out is True
     container.kill.assert_called_once()
 
@@ -79,3 +87,21 @@ def test_docker_api_error_returns_error():
 def test_sandbox_result_success_property():
     assert SandboxResult(exit_code=0).success is True
     assert SandboxResult(exit_code=1).success is False
+
+
+def test_cancel_kills_container():
+    """取消：cancel_check 返回 True 时强杀容器，返回 cancelled=True"""
+    container = MagicMock()
+
+    def _wait(timeout=None):
+        if container.kill.called:
+            return {"StatusCode": -1}
+        raise requests.exceptions.ReadTimeout()
+
+    container.wait.side_effect = _wait
+    container.logs.return_value = b"cancelled output"
+
+    result = SandboxExecutor(client=_client(container)).execute(code="x", cancel_check=lambda: True)
+    assert result.cancelled is True
+    assert "cancelled output" in result.output
+    container.kill.assert_called_once()

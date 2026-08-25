@@ -34,8 +34,48 @@ def api_root(request):
     )
 
 
+def health(request):
+    """健康检查：验证 DB / Redis / Docker 连通性，k8s/docker-compose 探活用。"""
+    import redis
+    from django.conf import settings
+    from django.db import connections
+
+    import docker
+
+    checks = {}
+    errors = 0
+
+    # ——— 数据库 ———
+    try:
+        connections["default"].cursor()
+        checks["db"] = "ok"
+    except Exception as e:
+        checks["db"] = f"error: {e}"
+        errors += 1
+
+    # ——— Redis ———
+    try:
+        r = redis.Redis.from_url(settings.CELERY_BROKER_URL)
+        r.ping()
+        checks["redis"] = "ok"
+    except Exception as e:
+        checks["redis"] = f"error: {e}"
+        errors += 1
+
+    # ——— Docker（仅 worker 容器有 docker.sock，web 上失败是正常的） ———
+    try:
+        client = docker.from_env()
+        client.ping()
+        checks["docker"] = "ok"
+    except Exception as e:
+        checks["docker"] = f"unavailable: {e}"
+
+    return JsonResponse(checks, status=500 if errors else 200)
+
+
 urlpatterns = [
     path("", api_root, name="api_root"),
+    path("health/", health, name="health"),
     path("admin/", admin.site.urls),
     path("api/v1/auth/", include("apps.users.urls")),
     path("api/v1/tasks/", include("apps.tasks.urls")),

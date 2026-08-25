@@ -55,3 +55,15 @@ def test_skip_non_pending(user, fake_sandbox, fake_es):
     task.refresh_from_db()
     assert task.status == Task.Status.SUCCESS
     assert fake_sandbox.result.exit_code == 0  # execute 未被调用，结果未变
+
+
+def test_cancelled_path(user, fake_sandbox, fake_es):
+    """RUNNING 任务被取消：executor 返回 cancelled=True → 状态变 CANCELLED"""
+    task = _run(
+        user,
+        SandboxResult(exit_code=-1, cancelled=True, duration=0.3),
+        fake_sandbox,
+        fake_es,
+    )
+    assert task.status == Task.Status.CANCELLED
+    assert task.error_message == "用户手动取消"

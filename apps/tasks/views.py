@@ -110,11 +110,59 @@ class TaskViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="cancel")
     def cancel(self, request, pk=None):
-        """取消任务——只能在 PENDING 时取消，已经开始跑的就拦不住啦。"""
+        """取消任务。
+
+        - PENDING：直接置为 CANCELLED（还没开始，立即生效）。
+        - RUNNING：设置 cancel_requested_at 标记，worker 里的 executor 轮询到后强杀容器，
+          由 worker 把状态改成 CANCELLED（异步生效，这里只"请求"取消）。
+        - 终态（SUCCESS/FAILED/TIMEOUT/CANCELLED）：拒绝，返回 400。
+        """
         task = self.get_object()
+
+        if task.status == Task.Status.RUNNING:
+            # 已经请求过取消了，直接返回当前状态（幂等）
+            task.cancel_requested_at = timezone.now()
+            task.save(update_fields=["cancel_requested_at", "updated_at"])
+            return Response(
+                {"detail": "已请求取消，worker 将在下个轮询周期停止任务"},
+                status=status.HTTP_202_ACCEPTED,
+            )
+
         try:
             task.transit(Task.Status.CANCELLED)
+            task.finished_at = timezone.now()
             task.save()
         except ValueError as e:
             return Response({"detail": str(e)}, status=status.HTTP_400_BAD_REQUEST)
         return Response(TaskSerializer(task).data)
+
+    @action(detail=True, methods=["post"], url_path="retry")
+    def retry(self, request, pk=None):
+        """重试终态任务：复用原参数创建新任务并立即调度。
+
+        只有终态（SUCCESS/FAILED/TIMEOUT/CANCELLED）可以重试；
+        PENDING/RUNNING 不能重试（任务还在进行中，没必要克隆一个）。
+        """
+        original = self.get_object()
+
+        if original.status in [Task.Status.PENDING, Task.Status.RUNNING]:
+            return Response(
+                {"detail": f"只有终态任务可以重试，当前状态: {original.status}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        node = select_node()
+        new_task = Task.objects.create(
+            name=original.name,
+            task_type=original.task_type,
+            code=original.code,
+            params=original.params,
+            priority=original.priority,
+            owner=request.user,
+            status=Task.Status.PENDING,
+            worker_id=node.name if node else "",
+        )
+
+        execute_task.delay(new_task.id)
+
+        return Response(TaskSerializer(new_task).data, status=status.HTTP_201_CREATED)

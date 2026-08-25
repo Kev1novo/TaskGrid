@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## 思考语言
+
+**所有内部推理、思考过程必须使用中文。**
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## 项目概述

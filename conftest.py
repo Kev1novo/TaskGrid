@@ -52,7 +52,7 @@ def fake_sandbox(monkeypatch):
         def __init__(self):
             self.result = SandboxResult(exit_code=0)
 
-        def execute(self, code, timeout=None):
+        def execute(self, code, timeout=None, cancel_check=None):
             return self.result
 
     fake = FakeSandbox()

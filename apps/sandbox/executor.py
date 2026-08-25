@@ -36,6 +36,7 @@ class SandboxResult:
       error:     系统级错误描述（不是用户代码报错，是 Docker 层面的问题）
       timed_out: 是否因为超时被强制终止
       oom:       是否因为内存超限被内核杀死
+      cancelled: 是否被用户手动取消（executor 轮询到取消标记后强杀容器）
       duration:  实际执行耗时（秒）
     """
 
@@ -44,6 +45,7 @@ class SandboxResult:
     error: str = ""
     timed_out: bool = False
     oom: bool = False
+    cancelled: bool = False
     duration: float = 0.0
 
     @property
@@ -72,7 +74,15 @@ class SandboxExecutor:
             logger.info("Pulling sandbox image %s", image)
             self.client.images.pull(image)  # 没有就从 Docker Hub 拉
 
-    def execute(self, code, timeout=None, mem_limit=None, cpus=None, network_disabled=None):
+    def execute(
+        self,
+        code,
+        timeout=None,
+        mem_limit=None,
+        cpus=None,
+        network_disabled=None,
+        cancel_check=None,
+    ):
         """执行一段 Python 代码，返回 SandboxResult。
 
         参数：
@@ -81,12 +91,14 @@ class SandboxExecutor:
           mem_limit        内存限制（默认 "256m"）
           cpus             CPU 核数限制（默认 1.0）
           network_disabled 是否禁用网络（默认 True）
+          cancel_check     取消回调：返回 True 时强杀容器（用于 RUNNING→CANCELLED）
 
         执行流程：
           1. 确保镜像存在
           2. docker run --rm --read-only --network=none --memory=256m ...
-          3. container.wait(timeout)  等待结束或超时
-          4. 取日志 → 销毁容器 → 返回结果
+          3. 轮询 container.wait(poll_interval) → 每次检查 cancel_check()
+          4. 超时/取消 → 强杀容器
+          5. 取日志 → 销毁容器 → 返回结果
         """
         timeout = timeout or settings.SANDBOX_TIMEOUT
         mem_limit = mem_limit or settings.SANDBOX_MEM_LIMIT
@@ -122,25 +134,52 @@ class SandboxExecutor:
                 environment={"PYTHONUNBUFFERED": "1"},  # Python 输出不缓冲
             )
 
-            # ——— 等待容器结束 ———
-            # wait(timeout) 超时视为任务超时。
+            # ——— 轮询等待容器结束 ———
+            # 不用 container.wait(timeout=T) 一把梭，而是短间隔轮询，
+            # 每次轮询间隙检查 cancel_check() 回调——这样 RUNNING 任务也能被取消。
+            #
             # 坑：Windows 命名管道上抛 ConnectionError，TCP 上抛 ReadTimeout，
             # 两种都要捕获，否则超时会被当成普通异常导致状态错误。
-            try:
-                wait_result = container.wait(timeout=timeout)
-            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
-                logger.warning("Task timed out after %ss, killing container", timeout)
+            POLL_INTERVAL = 0.5  # 每 0.5 秒检查一次
+            deadline = time.monotonic() + timeout
+
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    # ——— 超时 ———
+                    logger.warning("Task timed out after %ss, killing container", timeout)
+                    try:
+                        container.kill()  # SIGKILL 强杀
+                    except docker.errors.APIError:
+                        pass  # 容器可能已经自行退出了
+                    wait_result = container.wait()  # 等它确认死亡
+                    return SandboxResult(
+                        exit_code=wait_result.get("StatusCode", -1),
+                        output=self._get_logs(container),
+                        timed_out=True,
+                        duration=time.monotonic() - start,
+                    )
+
                 try:
-                    container.kill()  # SIGKILL 强杀
-                except docker.errors.APIError:
-                    pass  # 容器可能已经自行退出了
-                wait_result = container.wait()  # 等它确认死亡
-                return SandboxResult(
-                    exit_code=wait_result.get("StatusCode", -1),
-                    output=self._get_logs(container),
-                    timed_out=True,
-                    duration=time.monotonic() - start,
-                )
+                    wait_result = container.wait(timeout=min(POLL_INTERVAL, remaining))
+                    break  # 容器正常结束，退出轮询
+                except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+                    # wait 超时 = 容器还在跑
+                    # 检查用户是否请求了取消
+                    if cancel_check is not None and cancel_check():
+                        logger.warning("Task cancelled by user, killing container")
+                        try:
+                            container.kill()  # SIGKILL 强杀
+                        except docker.errors.APIError:
+                            pass  # 容器可能已经自行退出了
+                        wait_result = container.wait()  # 等它确认死亡
+                        return SandboxResult(
+                            exit_code=wait_result.get("StatusCode", -1),
+                            output=self._get_logs(container),
+                            cancelled=True,
+                            duration=time.monotonic() - start,
+                        )
+                    # 没取消，继续下一轮轮询
 
             # ——— 正常结束 ———
             exit_code = wait_result.get("StatusCode", -1)

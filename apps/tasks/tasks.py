@@ -29,9 +29,12 @@ logger = logging.getLogger(__name__)
 # ——————————————————————————————————————————————————————
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=10)
+@shared_task(bind=True, max_retries=3, default_retry_delay=10, soft_time_limit=33, time_limit=38)
 def execute_task(self, task_id):
-    """异步执行任务：在 Docker 沙箱中运行用户代码"""
+    """异步执行任务：在 Docker 沙箱中运行用户代码。
+    soft_time_limit=33: 沙箱默认超时 30s，给 3s 余量触发 SoftTimeLimitException
+    time_limit=38:    硬限 38s（soft 之后 5s 强杀），兜底容器启动卡死等极端情况
+    """
 
     # 用 apps.get_model 而不是直接 import Task，避免 Celery 启动时的循环导入
     Task = apps.get_model("tasks", "Task")
@@ -56,10 +59,19 @@ def execute_task(self, task_id):
 
         logger.info("Start executing task %s on %s", task_id, task.worker_id)
 
+        # ——— 取消检测回调：executor 轮询时调这个，判断用户是否请求了取消 ———
+        # 不能直接读内存里的 task 对象（web 进程改的是数据库），必须每次查库。
+        def _cancel_requested():
+            try:
+                return Task.objects.filter(id=task_id, cancel_requested_at__isnull=False).exists()
+            except Exception:
+                return False  # 查库失败就当没取消，别误杀
+
         # ——— 核心：在 Docker 沙箱里跑用户代码 ———
         result = SandboxExecutor().execute(
             code=task.code,
             timeout=task.params.get("timeout") or None,  # 用户可选自定义超时
+            cancel_check=_cancel_requested,
         )
 
         # ——— 把沙箱结果翻译成任务状态 ———
@@ -68,7 +80,10 @@ def execute_task(self, task_id):
             "duration": round(result.duration, 2),  # 执行耗时（秒）
         }
 
-        if result.timed_out:
+        if result.cancelled:
+            task.error_message = "用户手动取消"  # 用户请求了取消，executor 强杀了容器
+            task.transit(Task.Status.CANCELLED)
+        elif result.timed_out:
             task.transit(Task.Status.TIMEOUT)  # 超过时限被强杀
         elif result.oom:
             task.error_message = "内存超限，任务被强制终止"  # 退出码 137 = OOM killed

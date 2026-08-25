@@ -39,6 +39,12 @@ def test_pending_to_cancelled(user):
     assert task.status == Task.Status.CANCELLED
 
 
+def test_running_to_cancelled(user):
+    task = _task(user, Task.Status.RUNNING)
+    task.transit(Task.Status.CANCELLED)
+    assert task.status == Task.Status.CANCELLED
+
+
 @pytest.mark.parametrize(
     ("start", "target"),
     [
