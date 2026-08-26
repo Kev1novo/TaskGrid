@@ -15,6 +15,14 @@ from .serializers import (
 )
 from .tasks import execute_task
 
+# Priority → Celery 队列映射（4 级，与 celery.py 中的 Queue 定义对齐）
+_QUEUE_MAP = {
+    Task.Priority.LOW: "low",
+    Task.Priority.NORMAL: "default",
+    Task.Priority.HIGH: "high",
+    Task.Priority.CRITICAL: "critical",
+}
+
 # ——————————————————————————————————————————————————————
 # TaskViewSet：任务 API 的入口（CRUD + 状态变更 + 取消）
 #
@@ -73,7 +81,8 @@ class TaskViewSet(viewsets.ModelViewSet):
         )
 
         # 第二步：把任务推进 Redis 队列，等待 Celery worker 消费
-        execute_task.delay(task.id)
+        # 按优先级路由到不同队列：CRITICAL → critical, HIGH → high, …
+        execute_task.apply_async(args=[task.id], queue=_QUEUE_MAP.get(task.priority, "default"))
 
         # 第三步：返回完整对象（不是只返回创建字段）
         headers = self.get_success_headers(serializer.data)
@@ -163,6 +172,8 @@ class TaskViewSet(viewsets.ModelViewSet):
             worker_id=node.name if node else "",
         )
 
-        execute_task.delay(new_task.id)
+        execute_task.apply_async(
+            args=[new_task.id], queue=_QUEUE_MAP.get(new_task.priority, "default")
+        )
 
         return Response(TaskSerializer(new_task).data, status=status.HTTP_201_CREATED)

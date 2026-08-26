@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TaskGrid</title>
+<style>
+:root{--bg:#f5f5f5;--card:#fff;--text:#333;--muted:#888;--border:#ddd;--primary:#2563eb;--primary-hover:#1d4ed8;--red:#dc2626;--green:#16a34a;--radius:8px}
+@media(prefers-color-scheme:dark){
+:root{--bg:#111;--card:#1a1a1a;--text:#e5e5e5;--muted:#999;--border:#333;--primary:#3b82f6;--primary-hover:#60a5fa;--red:#ef4444;--green:#22c55e}
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+nav{display:flex;align-items:center;gap:1rem;padding:.75rem 1.5rem;background:var(--card);border-bottom:1px solid var(--border)}
+nav h1{font-size:1.1rem;font-weight:600;margin-right:auto}
+nav a,nav button{cursor:pointer;color:var(--primary);text-decoration:none;font-size:.9rem;background:none;border:none;padding:0;font-family:inherit}
+nav a:hover,nav button:hover{color:var(--primary-hover)}
+main{max-width:800px;margin:0 auto;padding:1.5rem}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;margin-bottom:1rem}
+h2{font-size:1.2rem;margin-bottom:1rem}
+label{display:block;font-size:.85rem;font-weight:500;margin-bottom:.25rem}
+input,textarea,select{width:100%;padding:.5rem .75rem;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font-size:.9rem;margin-bottom:.75rem;font-family:inherit}
+textarea{font-family:monospace;min-height:120px;resize:vertical}
+.btn{display:inline-flex;padding:.5rem 1rem;border:none;border-radius:6px;cursor:pointer;font-size:.85rem;font-weight:500}
+.btn-primary{background:var(--primary);color:#fff}
+.btn-primary:hover{background:var(--primary-hover)}
+.btn-danger{background:var(--red);color:#fff}
+.btn-danger:hover{opacity:.9}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}
+.error{color:var(--red);font-size:.85rem;margin-top:.25rem}
+table{width:100%;border-collapse:collapse;font-size:.85rem;}
+th,td{text-align:left;padding:.6rem .5rem;border-bottom:1px solid var(--border)}
+th{font-weight:600;color:var(--muted);font-size:.8rem}
+td{cursor:pointer}
+.task-row:hover{background:var(--bg)}
+.badge{display:inline-block;padding:.15rem .5rem;border-radius:12px;font-size:.75rem;font-weight:500}
+.badge-pending{background:#dbeafe;color:#1e40af}
+.badge-running{background:#fef3c7;color:#92400e}
+.badge-success{background:#dcfce7;color:#166534}
+.badge-failed{background:#fee2e2;color:#991b1b}
+.badge-timeout{background:#f3e8ff;color:#6b21a8}
+.badge-cancelled{background:#e5e7eb;color:#374151}
+@media(prefers-color-scheme:dark){
+.badge-pending{background:#1e3a5f;color:#93c5fd}
+.badge-running{background:#5c4a1e;color:#fde68a}
+.badge-success{background:#14532d;color:#86efac}
+.badge-failed{background:#5f1e1e;color:#fca5a5}
+.badge-timeout{background:#3b1f6e;color:#c4b5fd}
+.badge-cancelled{background:#374151;color:#d1d5db}
+}
+.text-muted{color:var(--muted);font-size:.85rem}
+.flex{display:flex;gap:.5rem;align-items:center;flex-wrap:wrap}
+.gap1{gap:1rem}
+.mb1{margin-bottom:.75rem}
+.mt1{margin-top:.75rem}
+.ml1{margin-left:.5rem}
+.pagination{display:flex;gap:.5rem;align-items:center;justify-content:center;margin-top:1rem}
+.pagination button{background:var(--card);border:1px solid var(--border);padding:.3rem .7rem;border-radius:6px;cursor:pointer;color:var(--text)}
+.pagination button:disabled{opacity:.4;cursor:default}
+.empty{padding:2rem;text-align:center;color:var(--muted)}
+.filter-bar{display:flex;gap:.5rem;margin-bottom:1rem;flex-wrap:wrap;align-items:end}
+.filter-bar select,.filter-bar input{width:auto;margin-bottom:0}
+pre{background:var(--bg);padding:.75rem;border-radius:6px;overflow-x:auto;font-size:.8rem;white-space:pre-wrap;word-break:break-all}
+#toast{position:fixed;top:1rem;right:1rem;background:#1f2937;color:#fff;padding:.6rem 1rem;border-radius:8px;font-size:.85rem;opacity:0;transition:opacity .3s;z-index:999;max-width:320px}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<nav id="nav"><h1>⚡ TaskGrid</h1></nav>
+<main id="app"></main>
+<div id="toast"></div>
+<script>
+var API='/api/v1'
+var state={user:null,page:1,totalPages:1,toastTimer:null}
+
+function getToken(){return localStorage.getItem('access')}
+function setToken(t){localStorage.setItem('access',t.access);if(t.refresh)localStorage.setItem('refresh',t.refresh)}
+function clearTokens(){localStorage.removeItem('access');localStorage.removeItem('refresh')}
+
+/* API client with auto-refresh */
+async function api(path,opts){
+  opts=opts||{}
+  var h={'Content-Type':'application/json'}
+  var t=getToken()
+  if(t)h['Authorization']='Bearer '+t
+  try{
+    var resp=await fetch(API+path,{...opts,headers:{...h,...opts.headers}})
+    if(resp.status===401&&localStorage.getItem('refresh')){
+      var r=await fetch(API+'/auth/refresh/',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh:localStorage.getItem('refresh')})})
+      if(r.ok){var d=await r.json();setToken(d);h['Authorization']='Bearer '+d.access;resp=await fetch(API+path,{...opts,headers:{...h,...opts.headers}})}
+      else{clearTokens();navigate()}
+    }
+    if(!resp.ok){var e=await resp.json().catch(function(){return{detail:resp.statusText}});throw new Error(e.detail||e[Object.keys(e)[0]]||resp.statusText)}
+    return resp.status===204?null:await resp.json()
+  }catch(err){if(!err.message.match(/Failed to fetch/))throw err;throw new Error('无法连接服务器')}
+}
+
+function toast(msg){var el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(state.toastTimer);state.toastTimer=setTimeout(function(){el.classList.remove('show')},3000)}
+function esc(s){if(!s)return'';var d=document.createElement('div');d.textContent=s;return d.innerHTML}
+
+function statusBadge(s){
+  var m={pending:'等待中',running:'执行中',success:'成功',failed:'失败',timeout:'超时',cancelled:'已取消'}
+  return '<span class="badge badge-'+s+'">'+(m[s]||s)+'</span>'
+}
+function priorityLabel(p){
+  var names={1:'低',2:'普通',3:'高',4:'紧急'}
+  var col=p>3?'var(--red)':p>2?'var(--orange)':'var(--muted)'
+  return '<span style="color:'+col+'">'+(names[p]||p)+'</span>'
+}
+
+function renderNav(){
+  var nav=document.getElementById('nav')
+  if(state.user){
+    nav.innerHTML='<h1>⚡ TaskGrid</h1><button class="btn btn-outline" onclick="navTo(\'tasks\')">任务</button><button class="btn btn-outline" onclick="navTo(\'tasks/create\')">新建</button><span class="text-muted" style="margin-left:auto">'+esc(state.user.username)+'</span><button class="btn btn-outline" id="logoutBtn">退出</button>'
+    document.getElementById('logoutBtn').onclick=function(){clearTokens();state.user=null;renderNav();navTo('login')}
+  }else{
+    nav.innerHTML='<h1>⚡ TaskGrid</h1><button class="btn btn-outline" onclick="navTo(\'login\')">登录</button><button class="btn btn-outline" onclick="navTo(\'register\')">注册</button>'
+  }
+}
+function showPage(h){document.getElementById('app').innerHTML=h}
+
+/* ===== Pages ===== */
+
+function loginPage(){
+  showPage('<div class="card" style="max-width:400px;margin:2rem auto"><h2>登录</h2>'
+    +'<form onsubmit="login(event)">'
+    +'<label for="user">用户名</label><input id="user" required autofocus>'
+    +'<label for="pass">密码</label><input id="pass" type="password" required>'
+    +'<button class="btn btn-primary" style="width:100%">登录</button>'
+    +'<div id="loginerr" class="error mt1"></div></form>'
+    +'<p class="text-muted mt1" style="text-align:center">没有账号？<a onclick="navTo(\'register\')" style="cursor:pointer;color:var(--primary)">注册</a></p></div>')
+}
+async function login(e){e.preventDefault()
+  try{
+    var d=await api('/auth/login/',{method:'POST',body:JSON.stringify({username:user.value,password:pass.value})})
+    setToken(d);state.user=d.user;renderNav();navTo('tasks')
+  }catch(err){document.getElementById('loginerr').textContent=err.message}
+}
+
+function registerPage(){
+  showPage('<div class="card" style="max-width:400px;margin:2rem auto"><h2>注册</h2>'
+    +'<form onsubmit="register(event)">'
+    +'<label for="ruser">用户名</label><input id="ruser" required autofocus>'
+    +'<label for="rpass">密码（至少8位）</label><input id="rpass" type="password" required minlength="8">'
+    +'<label for="rpass2">确认密码</label><input id="rpass2" type="password" required>'
+    +'<button class="btn btn-primary" style="width:100%">注册</button>'
+    +'<div id="regerr" class="error mt1"></div></form>'
+    +'<p class="text-muted mt1" style="text-align:center">已有账号？<a onclick="navTo(\'login\')" style="cursor:pointer;color:var(--primary)">登录</a></p></div>')
+}
+async function register(e){e.preventDefault()
+  if(rpass.value!==rpass2.value){document.getElementById('regerr').textContent='两次密码不一致';return}
+  try{
+    var d=await api('/auth/register/',{method:'POST',body:JSON.stringify({username:ruser.value,password:rpass.value})})
+    setToken(d);state.user=d.user;renderNav();navTo('tasks')
+  }catch(err){document.getElementById('regerr').textContent=err.message}
+}
+
+async function taskList(){
+  var p=state.page||1
+  try{
+    var qInput=document.getElementById('q')
+    var sInput=document.getElementById('s')
+    var q=qInput?qInput.value:''
+    var s=sInput?sInput.value:''
+    var url='/tasks/?page='+p
+    if(s)url+='&status='+s
+    var d=await api(url)
+    state.totalPages=Math.ceil(d.count/20)||1
+    var rows=d.results.map(function(t){
+      return '<tr class="task-row" onclick="navTo(\'tasks/'+t.id+'\')">'
+        +'<td>'+esc(t.name)+'</td>'
+        +'<td>'+statusBadge(t.status)+'</td>'
+        +'<td>'+priorityLabel(t.priority)+'</td>'
+        +'<td class="text-muted" style="white-space:nowrap">'+new Date(t.created_at).toLocaleString()+'</td></tr>'
+    }).join('')
+    var b=state.page>1?'<button onclick="state.page='+(state.page-1)+';taskList()">‹</button>':''
+    var f=state.page<state.totalPages?'<button onclick="state.page='+(state.page+1)+';taskList()">›</button>':''
+    var filterOpts=['pending','running','success','failed','timeout','cancelled']
+    var filterNames=['等待中','执行中','成功','失败','超时','已取消']
+    var filterHtml='<option value="">全部状态</option>'
+    for(var i=0;i<filterOpts.length;i++){
+      filterHtml+='<option value="'+filterOpts[i]+'"'+(filterOpts[i]===s?' selected':'')+'>'+filterNames[i]+'</option>'
+    }
+    showPage('<div class="card">'
+      +'<div class="flex gap1 mb1"><h2 style="margin-bottom:0">任务列表</h2></div>'
+      +'<div class="filter-bar">'
+      +'<input id="q" placeholder="搜索名称..." value="'+esc(q)+'" onkeyup="if(event.key==\'Enter\'){state.page=1;taskList()}">'
+      +'<select id="s" onchange="state.page=1;taskList()">'+filterHtml+'</select>'
+      +'</div>'
+      +(d.results.length
+        ?'<table><thead><tr><th>名称</th><th>状态</th><th>优先级</th><th>创建时间</th></tr></thead><tbody>'+rows+'</tbody></table>'
+          +'<div class="pagination">'+b+'<span class="text-muted">'+state.page+'/'+state.totalPages+'</span>'+f+'</div>'
+        :'<div class="empty">暂无任务</div>')
+      +'</div>')
+  }catch(err){toast('加载失败: '+err.message)}
+}
+
+function createPage(){
+  showPage('<div class="card" style="max-width:600px"><h2>新建任务</h2>'
+    +'<form onsubmit="createTask(event)">'
+    +'<label for="tname">任务名称</label><input id="tname" required autofocus placeholder="例如: 计算圆周率">'
+    +'<label for="tcode">代码</label><textarea id="tcode" required placeholder="print(&quot;hello world&quot;)"></textarea>'
+    +'<div class="flex gap1"><div style="flex:1"><label for="tpri">优先级</label><select id="tpri"><option value="1">低</option><option value="2" selected>普通</option><option value="3">高</option><option value="4">紧急</option></select></div>'
+    +'<div style="flex:1"><label for="ttimeout">超时(秒,可选)</label><input id="ttimeout" type="number" min="1" max="300" placeholder="默认30"></div></div>'
+    +'<div id="cerr" class="error mb1"></div>'
+    +'<button class="btn btn-primary">提交任务</button></form></div>')
+}
+async function createTask(e){e.preventDefault()
+  var params={}
+  var timeout=document.getElementById('ttimeout').value
+  if(timeout)params.timeout=parseInt(timeout)
+  try{
+    await api('/tasks/',{method:'POST',body:JSON.stringify({
+      name:tname.value,code:tcode.value,priority:parseInt(tpri.value),params:params
+    })})
+    toast('任务已创建');state.page=1;navTo('tasks')
+  }catch(err){document.getElementById('cerr').textContent=err.message}
+}
+
+async function taskDetail(id){
+  try{
+    var t=await api('/tasks/'+id+'/')
+    var isPend=t.status==='pending',isRun=t.status==='running'
+    var isTerm=['success','failed','timeout','cancelled'].indexOf(t.status)>=0
+    var resHtml=''
+    if(t.result&&t.result.output){
+      resHtml='<div class="card"><h2>执行结果</h2><pre>'+esc(t.result.output)+'</pre>'
+        +(t.result.duration?'<p class="text-muted">耗时: '+t.result.duration+' 秒</p>':'')+'</div>'
+    }
+    showPage('<div class="card"><h2>'+esc(t.name)+'</h2>'
+      +'<table style="width:auto"><tbody>'
+      +'<tr><th style="padding-right:1.5rem">状态</th><td>'+statusBadge(t.status)+'</td></tr>'
+      +'<tr><th>优先级</th><td>'+priorityLabel(t.priority)+'</td></tr>'
+      +'<tr><th>类型</th><td>'+esc(t.task_type)+'</td></tr>'
+      +'<tr><th>节点</th><td>'+(t.worker_id||'—')+'</td></tr>'
+      +'<tr><th>创建时间</th><td>'+new Date(t.created_at).toLocaleString()+'</td></tr>'
+      +(t.started_at?'<tr><th>开始</th><td>'+new Date(t.started_at).toLocaleString()+'</td></tr>':'')
+      +(t.finished_at?'<tr><th>完成</th><td>'+new Date(t.finished_at).toLocaleString()+'</td></tr>':'')
+      +(t.error_message?'<tr><th>错误</th><td style="color:var(--red)">'+esc(t.error_message)+'</td></tr>':'')
+      +'</tbody></table>'
+      +(isPend||isRun?'<button class="btn btn-danger mt1" onclick="cancelTask(\''+t.id+'\')">取消任务</button>':'')
+      +(isTerm?'<button class="btn btn-outline mt1 ml1" onclick="retryTask(\''+t.id+'\')">重新执行</button>':'')
+      +'</div>'
+      +'<div class="card"><h2>代码</h2><pre>'+esc(t.code)+'</pre></div>'
+      +resHtml)
+  }catch(err){showPage('<div class="card"><p class="error">加载失败: '+err.message+'</p></div>')}
+}
+
+async function cancelTask(id){
+  try{var r=await api('/tasks/'+id+'/cancel/',{method:'POST'});toast(r.detail||'已提交取消');taskDetail(id)}
+  catch(err){toast('取消失败: '+err.message)}
+}
+async function retryTask(id){
+  try{var d=await api('/tasks/'+id+'/retry/',{method:'POST'});toast('新任务已创建');navTo('tasks/'+d.id)}
+  catch(err){toast('重试失败: '+err.message)}
+}
+
+/* ===== Router ===== */
+function navTo(hash){window.location.hash='#'+hash;routePage(hash)}
+function routePage(hash){
+  if(!state.user&&['login','register',''].indexOf(hash)<0){
+    showPage('<div class="card" style="max-width:400px;margin:2rem auto;text-align:center"><p>请先登录</p><button class="btn btn-primary mt1" onclick="navTo(\'login\')">登录</button></div>')
+    renderNav();return
+  }
+  renderNav()
+  if(hash==='login'){loginPage();return}
+  if(hash==='register'){registerPage();return}
+  if(hash==='tasks/create'){createPage();return}
+  var match=hash.match(/^tasks\/([^/]+)$/)
+  if(match){taskDetail(match[1]);return}
+  state.page=1;taskList()
+}
+window.onhashchange=function(){routePage(window.location.hash.slice(1))}
+
+/* ===== Init ===== */
+async function init(){
+  var t=getToken()
+  if(t){
+    try{var d=await api('/auth/profile/');state.user=d;renderNav()}catch(e){clearTokens()}
+  }
+  var hash=window.location.hash.slice(1)||'tasks'
+  routePage(hash)
+}
+init()
+</script>
+</body>
+</html>

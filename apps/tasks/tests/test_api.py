@@ -10,7 +10,10 @@ TASKS = "/api/v1/tasks/"
 @pytest.fixture(autouse=True)
 def _block_celery(monkeypatch):
     """API 测试里不真的派发/执行 Celery 任务。"""
-    monkeypatch.setattr("apps.tasks.views.execute_task.delay", lambda task_id: None)
+    monkeypatch.setattr(
+        "apps.tasks.views.execute_task.apply_async",
+        lambda args, queue=None, **kw: None,
+    )
 
 
 def _other_user():

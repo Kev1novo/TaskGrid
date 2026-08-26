@@ -63,7 +63,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -143,6 +143,7 @@ CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
 CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_DEFAULT_QUEUE = "default"  # 未指定 queue 的任务落 default 队列
 CELERY_TASK_TIME_LIMIT = 30 * 60  # 单个任务最多 30 分钟
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # 公平调度，避免某个 worker 饿死大任务
 

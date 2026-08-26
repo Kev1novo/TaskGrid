@@ -41,6 +41,9 @@ out/
 .env.local
 .env.*.local
 
+# coverage
+.coverage
+
 # misc
 *.pem
 npm-debug.log*
