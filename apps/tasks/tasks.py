@@ -2,6 +2,7 @@ import logging
 import traceback
 
 from celery import shared_task
+from celery.exceptions import SoftTimeLimitExceeded
 from django.apps import apps
 from django.utils import timezone
 
@@ -45,18 +46,24 @@ def execute_task(self, task_id):
         logger.error("Task %s not found", task_id)
         return  # 任务不存在就不重试了，直接返回
 
-    # 守门：只处理 PENDING 状态的任务，防止重复执行
-    if task.status != Task.Status.PENDING:
-        logger.warning("Task %s status is %s, skip", task_id, task.status)
+    # 原子守门：UPDATE tasks SET status='running' WHERE id=task_id AND status='pending'
+    # 如果同一个任务被两个 worker 同时取到，只有一个 worker 的 UPDATE 会成功（受影响行数=1），
+    # 另一个受影响行数=0，直接跳过——避免了两个 worker 同时执行同一个任务。
+    updated = Task.objects.filter(id=task_id, status=Task.Status.PENDING).update(
+        status=Task.Status.RUNNING, started_at=timezone.now()
+    )
+    if not updated:
+        logger.warning(
+            "Task %s is no longer PENDING (already picked up by another worker or cancelled), skip",
+            task_id,
+        )
         return
 
-    try:
-        # ——— 状态：排队 → 执行中 ———
-        task.transit(Task.Status.RUNNING)
-        task.started_at = timezone.now()
-        task.worker_id = self.request.hostname or "unknown-worker"  # 记录是哪个 worker 在跑
-        task.save()
+    # 刷一下内存里的 task 对象，拿到数据库里最新的状态
+    task.refresh_from_db()
+    task.worker_id = self.request.hostname or "unknown-worker"
 
+    try:
         logger.info("Start executing task %s on %s", task_id, task.worker_id)
 
         # ——— 取消检测回调：executor 轮询时调这个，判断用户是否请求了取消 ———
@@ -95,11 +102,32 @@ def execute_task(self, task_id):
             task.transit(Task.Status.FAILED)  # exit_code != 0，代码报错
 
         task.finished_at = timezone.now()
-        task.save()
+        task.save(
+            update_fields=[
+                "status",
+                "result",
+                "error_message",
+                "finished_at",
+                "updated_at",
+            ]
+        )
         logger.info("Task %s done, status=%s", task_id, task.status)
 
         # ——— 写入 ES（辅助功能，失败了只记日志，不影响任务主流程） ———
         index_task_log(task)
+
+    except SoftTimeLimitExceeded:
+        # SoftTimeLimitException 是 Celery 层面的超时信号（soft_time_limit=33s 触发），
+        # 与 Docker 沙箱超时不同——这个说明 celery 任务本身卡住了（比如 Docker daemon 无响应）。
+        logger.warning("Task %s soft time limit exceeded", task_id)
+        try:
+            task.refresh_from_db()
+            task.transit(Task.Status.TIMEOUT)
+            task.error_message = "任务执行超时（Celery 软超时）"
+            task.finished_at = timezone.now()
+            task.save(update_fields=["status", "error_message", "finished_at", "updated_at"])
+        except Exception:
+            logger.exception("Failed to update task %s after soft timeout", task_id)
 
     except Exception as exc:
         # ——— 异常处理 ———
@@ -111,7 +139,7 @@ def execute_task(self, task_id):
             task.error_message = f"{exc}\n{traceback.format_exc()}"
             task.transit(Task.Status.FAILED)
             task.finished_at = timezone.now()
-            task.save()
+            task.save(update_fields=["status", "error_message", "finished_at", "updated_at"])
         except Exception:
             logger.exception("Failed to update task %s status", task_id)
 

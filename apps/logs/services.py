@@ -39,9 +39,15 @@ INDEX_MAPPING = {
 }
 
 
+_es_client = None  # 模块级单例，避免每个请求都创建新连接
+
+
 def get_client():
-    """获取 ES 客户端连接。"""
-    return Elasticsearch(settings.ELASTICSEARCH_URL)
+    """获取 ES 客户端连接（惰性初始化，模块级单例）。"""
+    global _es_client
+    if _es_client is None:
+        _es_client = Elasticsearch(settings.ELASTICSEARCH_URL)
+    return _es_client
 
 
 def ensure_index():
@@ -90,27 +96,34 @@ def search_logs(q=None, task_id=None, owner_id=None, status=None, size=50):
 
     返回格式：
       [{...fields..., "_id": "es_doc_id", "_score": 2.5}, ...]
+
+    ⚠️ 降级设计：ES 异常时返回空列表，绝不抛异常——
+    与 index_task_log 保持一致的降级行为。
     """
-    # 构建 ES 的 bool 查询条件
-    must = []
-    if q:
-        must.append({"multi_match": {"query": q, "fields": ["output", "error", "task_name"]}})
-    if task_id:
-        must.append({"term": {"task_id": task_id}})
-    if owner_id:
-        must.append({"term": {"owner_id": owner_id}})
-    if status:
-        must.append({"term": {"status": status}})
+    try:
+        # 构建 ES 的 bool 查询条件
+        must = []
+        if q:
+            must.append({"multi_match": {"query": q, "fields": ["output", "error", "task_name"]}})
+        if task_id:
+            must.append({"term": {"task_id": task_id}})
+        if owner_id:
+            must.append({"term": {"owner_id": owner_id}})
+        if status:
+            must.append({"term": {"status": status}})
 
-    body = {
-        "query": {"bool": {"must": must}} if must else {"match_all": {}},
-        "size": size,
-        "sort": [{"created_at": "desc"}],  # 最新的排前面
-    }
+        body = {
+            "query": {"bool": {"must": must}} if must else {"match_all": {}},
+            "size": size,
+            "sort": [{"created_at": "desc"}],  # 最新的排前面
+        }
 
-    # 调用 ES 搜索
-    resp = get_client().search(index=settings.ELASTICSEARCH_INDEX, body=body)
-    return [_source(h) for h in resp["hits"]["hits"]]
+        # 调用 ES 搜索
+        resp = get_client().search(index=settings.ELASTICSEARCH_INDEX, body=body)
+        return [_source(h) for h in resp["hits"]["hits"]]
+    except Exception:
+        logger.exception("Failed to search logs in ES")
+        return []
 
 
 def _source(hit):

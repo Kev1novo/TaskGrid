@@ -25,10 +25,16 @@ class Node(models.Model):
         max_length=20,
         choices=Status.choices,
         default=Status.OFFLINE,  # 刚注册默认离线，等心跳上报后改 ONLINE
+        db_index=True,  # select_node / mark_offline_if_stale 都按 status 查询
     )
     cpu_percent = models.FloatField("CPU 使用率(%)", default=0.0)  # 调度用：CPU 越低越优先
     mem_percent = models.FloatField("内存使用率(%)", default=0.0)  # 调度用：内存越低越优先
-    last_heartbeat = models.DateTimeField("最后心跳", null=True, blank=True)
+    last_heartbeat = models.DateTimeField(
+        "最后心跳",
+        null=True,
+        blank=True,
+        db_index=True,  # mark_offline_if_stale 按心跳时间过滤超时节点
+    )
     created_at = models.DateTimeField("注册时间", auto_now_add=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 

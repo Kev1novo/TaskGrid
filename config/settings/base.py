@@ -9,7 +9,7 @@ import environ
 
 env = environ.Env(
     DEBUG=(bool, True),
-    SECRET_KEY=(str, "django-insecure-dev-key-change-in-production"),
+    SECRET_KEY=(str, ""),
     ALLOWED_HOSTS=(list, []),
 )
 
@@ -117,6 +117,14 @@ REST_FRAMEWORK = {
         "rest_framework.filters.OrderingFilter",
         "rest_framework.filters.SearchFilter",
     ],
+    "DEFAULT_THROTTLE_CLASSES": [
+        "rest_framework.throttling.AnonRateThrottle",  # 匿名用户限流
+        "rest_framework.throttling.UserRateThrottle",  # 已认证用户限流
+    ],
+    "DEFAULT_THROTTLE_RATES": {
+        "anon": "100/hour",  # 匿名请求：每小时 100 次
+        "user": "1000/hour",  # 已认证请求：每小时 1000 次
+    },
 }
 
 SPECTACULAR_SETTINGS = {
@@ -132,7 +140,7 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": True,
 }
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False  # 生产环境必须关闭，dev.py 会覆盖为 True
 
 # Celery
 CELERY_BROKER_URL = env("REDIS_URL", default="redis://127.0.0.1:6379/0")

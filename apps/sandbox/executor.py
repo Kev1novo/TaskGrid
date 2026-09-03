@@ -62,8 +62,18 @@ class SandboxExecutor:
     """
 
     def __init__(self, client=None):
-        # client=None 时自动从环境变量/本机 Docker daemon 连接
-        self.client = client or docker.from_env()
+        # client=None 时延迟连接：只在第一次真正使用时才连 Docker daemon，
+        # 避免 SandboxExecutor() 在 web 进程里实例化就崩溃（web 没有 docker.sock）
+        self._client = client  # None 表示还没连，Docker 客户端对象表示已连 / 注入的 mock
+
+    @property
+    def client(self):
+        """惰性连接 Docker daemon：只在第一次真正调用 Docker API 时才连接。
+        避免在 web 进程（没有 docker.sock）里实例化 SandboxExecutor 就崩溃。
+        """
+        if self._client is None:
+            self._client = docker.from_env()
+        return self._client
 
     def ensure_image(self, image=None):
         """确保沙箱镜像存在，不存在就拉取。"""

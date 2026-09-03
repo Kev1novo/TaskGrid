@@ -47,6 +47,7 @@ class Task(models.Model):
         max_length=20,
         choices=Status.choices,
         default=Status.PENDING,
+        db_index=True,  # 列表查询按 status 筛选是最高频查询
     )
     priority = models.IntegerField(
         "优先级",
@@ -62,7 +63,7 @@ class Task(models.Model):
         verbose_name="创建者",
     )
     worker_id = models.CharField(
-        "执行节点", max_length=100, blank=True
+        "执行节点", max_length=100, blank=True, db_index=True
     )  # 哪个 worker 机器在执行这个任务
 
     # ——— 执行结果 ———
@@ -75,7 +76,7 @@ class Task(models.Model):
     # ——— 时间戳 ———
     started_at = models.DateTimeField("开始时间", null=True, blank=True)
     finished_at = models.DateTimeField("结束时间", null=True, blank=True)
-    created_at = models.DateTimeField("创建时间", auto_now_add=True)
+    created_at = models.DateTimeField("创建时间", auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField("更新时间", auto_now=True)
 
     class Meta:

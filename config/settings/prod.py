@@ -14,3 +14,11 @@ if not os.environ.get("SECRET_KEY"):
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")  # noqa: F405
 
 DATABASES = {"default": env.db_url("DATABASE_URL")}  # noqa: F405
+
+# ——— HTTPS 安全 ———
+# 生产环境必须走 HTTPS：nginx 做 TLS 终止，Django 信任代理头
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)  # noqa: F405
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=31536000)  # noqa: F405
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
