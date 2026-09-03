@@ -26,6 +26,9 @@ python manage.py runserver
 # Celery worker + Flower 监控（弹两个新窗口，代码改了必须重启 worker）
 scripts\start_celery.bat
 
+# 开发依赖一键起（postgres/redis/ES）+ Django dev server + Celery worker
+scripts\start_dev.bat
+
 # 数据库迁移
 python manage.py makemigrations
 python manage.py migrate
@@ -64,8 +67,8 @@ docker compose -f docker-compose.dev.yml up -d
 ```
 POST /api/v1/tasks/  (TaskViewSet.create)
   → select_node() 选择在线节点，写入 task.worker_id
-  → execute_task.delay(task_id) 入 Redis 队列
-  → Celery worker 消费，状态机 PENDING→RUNNING
+  → execute_task.apply_async(args=[task.id], queue=priority_queue) 按优先级路由入队
+  → Celery worker 消费，状态机 PENDING→RUNNING（soft_time_limit=33s / time_limit=38s）
   → SandboxExecutor 起一次性 Docker 容器隔离执行
   → 状态机 →SUCCESS/FAILED/TIMEOUT，写入 ES
 ```
@@ -73,7 +76,7 @@ POST /api/v1/tasks/  (TaskViewSet.create)
 ### App 职责
 
 - **apps/users** — 自定义 User（role 字段）、JWT 认证、RBAC 权限类（`IsAdmin` / `IsAdminOrSelf` / `IsOwnerOrAdmin`）。注意 `IsOwnerOrAdmin.has_permission` 必须返回登录校验，否则匿名用户会打到 500。
-- **apps/tasks** — 核心业务。`Task.transit()` 是状态机（PENDING→RUNNING→SUCCESS/FAILED/TIMEOUT，PENDING→CANCELLED），非法转移抛 ValueError。`TaskViewSet.create` 被重写以返回完整序列化对象（默认返回的是创建 serializer 的 data，没有 id）。
+- **apps/tasks** — 核心业务。`Task.transit()` 是状态机（PENDING→RUNNING→SUCCESS/FAILED/TIMEOUT，PENDING→CANCELLED），非法转移抛 ValueError。`cancel_requested_at` 字段实现异步取消：用户请求取消 RUNNING 任务时打标记，executor 轮询检测后强杀容器。`TaskViewSet.create` 被重写以返回完整序列化对象（默认返回的是创建 serializer 的 data，没有 id）。`POST /tasks/{id}/retry/` 克隆终态任务（新 id，复用 name/code/params/priority）。优先级按 `_QUEUE_MAP` 路由到四个 Celery 队列。
 - **apps/nodes** — 节点注册/心跳/故障检测。心跳由每个 worker 进程内的后台线程上报（`celery_events.py`），**不用 Celery beat**——beat 派发的任务会被任意 worker 消费，无法代表本节点负载。`select_node(strategy)` 是调度策略（策略模式）。
 - **apps/sandbox** — `SandboxExecutor.execute()`：一次性容器、只读文件系统、网络禁用、内存/CPU/进程数限制、超时强杀、OOM 检测（退出码 137）。结果以 `SandboxResult` dataclass 返回，由 tasks 层翻译成任务状态。
 - **apps/logs** — ES 索引/检索。**降级设计**：ES 失败只记日志，绝不影响任务主流程（辅助系统不能拖垮关键路径）。
@@ -81,8 +84,11 @@ POST /api/v1/tasks/  (TaskViewSet.create)
 ### 配置
 
 - `config/settings/` 按环境拆分：`base.py`（通用）+ `dev.py` / `prod.py`。`config/celery.py` 是 Celery 应用。
+- `config/celery.py` 定义了 4 个优先级队列（`critical` / `high` / `default` / `low`），worker 按队列名消费对应级别的任务。`CELERY_TASK_DEFAULT_QUEUE = "default"`（base.py）确保未指定队列的任务落入默认队列。
+- `apps/tasks/tasks.py` 的 `execute_task` 设置了 `soft_time_limit=33, time_limit=38`（沙箱默认 30s，给 3s 宽限触发软超时，再 5s 硬杀）。
 - 配置项从 `.env` 读取（django-environ），模板见 `.env.example`。改配置后 `.env` 可能不生效需同步。
 - `prod.py` 强制 `SECRET_KEY` 必须由环境变量提供（base 注册了 dev fallback，`env()` 永不抛错）。生产集群的环境变量由 `docker-compose.prod.yml` 的 `x-app-env` 锚点注入。
+- `config/urls.py` 根路径 `/` 返回 SPA 单页应用（`TemplateView` → `templates/index.html`），`GET /health/` 检查 DB/Redis/Docker 连通性。
 
 ### 生产部署（阶段 7）
 
@@ -101,6 +107,14 @@ POST /api/v1/tasks/  (TaskViewSet.create)
 - **`python:3.12-slim` 没有 `ps` 命令**：验证 gunicorn 进程用 `docker compose logs web | grep "booting worker"`。
 - **compose 项目名隔离**：prod 用 `name: taskgrid-prod`，否则卷名会与 dev 的 `test1_*` 冲突。`depends_on: condition: service_healthy` 只被 Compose v2 支持。
 
+## 前端
+
+- 单文件 SPA：[templates/index.html](templates/index.html)，Django `TemplateView` 直接服务，无外部 JS 依赖。
+- **页面**：`#login` / `#register` / `#tasks`（列表+分页+筛选）/ `#tasks/create` / `#tasks/{id}`（详情+取消+重试）。
+- **认证**：JWT token 存 localStorage，`api()` 函数拦截 401 自动用 refresh token 换新 access。过期跳登录页。
+- **主题**：CSS 变量 + `prefers-color-scheme` 自动适配暗色/亮色模式。
+- **注意**：后端 `PAGE_SIZE=20`，前端分页计算用 `/20`（之前硬编码 15 导致翻页 404，已修复）。
+
 ## 安全模型
 
 - JWT 认证：`access` 30 分钟 / `refresh` 7 天。
@@ -109,7 +123,7 @@ POST /api/v1/tasks/  (TaskViewSet.create)
 
 ## 测试与规范
 
-- **pytest**：77 个用例，覆盖率 91%。配置在 [pyproject.toml](pyproject.toml)（`config.settings.test`，Celery eager 模式），公共 fixtures 在 [conftest.py](conftest.py)（fake_sandbox / fake_es / auth_client）。测试库需 dev postgres 容器在跑。
-- **mock 边界**：Docker（沙箱）、ES（日志）、psutil（心跳）、Celery delay（API 测试阻断真实派发）都打补丁，测试不碰真实 I/O。
+- **pytest**：85 个用例，覆盖率 91%。配置在 [pyproject.toml](pyproject.toml)（`config.settings.test`，Celery eager 模式），公共 fixtures 在 [conftest.py](conftest.py)（fake_sandbox / fake_es / auth_client）。测试库需 dev postgres 容器在跑。
+- **mock 边界**：Docker（沙箱）、ES（日志）、psutil（心跳）、Celery `apply_async`（API 测试阻断真实派发）都打补丁，测试不碰真实 I/O。
 - **规范**：black/isort（line-length 100）+ flake8（.flake8 排除 .venv/.git/migrations）。pre-commit 装 3 个钩子，git commit 时自动跑。
 - 手动验证流程见 `docs/phase*_*.md` 各阶段文档。验证接口建议加 `-H "Accept: application/json"` 否则 DRF 返回可浏览 HTML。
