@@ -5,7 +5,7 @@ x-app-env: &app-env
   DJANGO_SETTINGS_MODULE: config.settings.prod
   SECRET_KEY: ${SECRET_KEY:-change-me-taskgrid-prod-key}
   DEBUG: "False"
-  ALLOWED_HOSTS: localhost,127.0.0.1
+  ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
   DATABASE_URL: postgres://postgres:taskgridprod123@postgres:5432/taskgrid
   REDIS_URL: redis://redis:6379/0
   ELASTICSEARCH_URL: http://elasticsearch:9200
@@ -89,7 +89,7 @@ services:
     environment:
       <<: *app-env
       DOCKER_HOST: unix:///var/run/docker.sock
-    command: celery -A config worker -l info --concurrency=2
+    command: celery -A config worker -l info --concurrency=2 -Q critical,high,default,low
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

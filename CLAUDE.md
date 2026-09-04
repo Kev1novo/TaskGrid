@@ -60,6 +60,8 @@ docker compose -f docker-compose.dev.yml up -d
 
 生产集群（`docker compose -f docker-compose.prod.yml up -d`），入口是 Nginx `http://localhost:8080`。注意 prod 与 dev 集群用不同的 compose 项目名（`taskgrid-prod` vs 默认），卷和端口完全隔离，互不影响。
 
+线上演示：`http://123.207.204.108:8080`（腾讯云 2C2G VPS，五容器编排，无 ES 以适配 2GB 内存）。
+
 ## 架构
 
 ### 核心异步链路（理解全项目关键）
@@ -90,12 +92,13 @@ POST /api/v1/tasks/  (TaskViewSet.create)
 - `prod.py` 强制 `SECRET_KEY` 必须由环境变量提供（base 注册了 dev fallback，`env()` 永不抛错）。生产集群的环境变量由 `docker-compose.prod.yml` 的 `x-app-env` 锚点注入。
 - `config/urls.py` 根路径 `/` 返回 SPA 单页应用（`TemplateView` → `templates/index.html`），`GET /health/` 检查 DB/Redis/Docker 连通性。
 
-### 生产部署（阶段 7）
+### 生产部署（阶段 7 + 腾讯云上线）
 
-- 应用镜像 [Dockerfile](Dockerfile) web/worker 共用，非 root `app` 用户跑 gunicorn（3 workers × 2 threads）。依赖用 `requirements-prod.txt`（requirements.txt 剔除 pywin32 + 追加 gunicorn）。
-- [docker-compose.prod.yml](docker-compose.prod.yml)：六服务编排，`depends_on: condition: service_healthy` 控制启动顺序（web 等 infra 健康后跑 migrate+collectstatic；worker 等 web 健康再消费任务）。
+- 应用镜像 [Dockerfile](Dockerfile) web/worker 共用，非 root `app` 用户跑 gunicorn（本地 3 workers / 线上 2 workers × 2 threads）。依赖用 `requirements-prod.txt`（requirements.txt 剔除 pywin32 + 追加 gunicorn）。
+- [docker-compose.prod.yml](docker-compose.prod.yml)：web/worker/nginx/PG/Redis/ES 全容器化编排，`depends_on: condition: service_healthy` 控制启动顺序：web 等 PG+Redis 健康后执行 migrate+collectstatic 再起 gunicorn，worker 等 web 健康后才消费任务。线上因 2GB 内存限制去掉了 ES。
 - **Docker-out-of-Docker**：worker 容器挂载宿主 `/var/run/docker.sock` 来起沙箱容器，所以 worker 的 `user: "0"`（socket 权限 root:docker）；沙箱容器内仍以 `sandbox` 用户隔离运行用户代码。
 - Nginx [docker/nginx/nginx.conf](docker/nginx/nginx.conf) 反代 `web:8000` + 直接服务 `static_volume` 里的静态文件。
+- 腾讯云部署适配：Docker Hub → 腾讯云镜像，PyPI → 阿里云镜像，SECURE_SSL_REDIRECT=False（暂无 TLS）。
 
 ## 关键坑（Windows 特定）
 
@@ -123,7 +126,8 @@ POST /api/v1/tasks/  (TaskViewSet.create)
 
 ## 测试与规范
 
-- **pytest**：85 个用例，覆盖率 91%。配置在 [pyproject.toml](pyproject.toml)（`config.settings.test`，Celery eager 模式），公共 fixtures 在 [conftest.py](conftest.py)（fake_sandbox / fake_es / auth_client）。测试库需 dev postgres 容器在跑。
+- **pytest**：85 个用例，覆盖率 90%。配置在 [pyproject.toml](pyproject.toml)（`config.settings.test`，Celery eager 模式），公共 fixtures 在 [conftest.py](conftest.py)（fake_sandbox / fake_es / auth_client）。测试库需 dev postgres 容器在跑。
 - **mock 边界**：Docker（沙箱）、ES（日志）、psutil（心跳）、Celery `apply_async`（API 测试阻断真实派发）都打补丁，测试不碰真实 I/O。
 - **规范**：black/isort（line-length 100）+ flake8（.flake8 排除 .venv/.git/migrations）。pre-commit 装 3 个钩子，git commit 时自动跑。
 - 手动验证流程见 `docs/phase*_*.md` 各阶段文档。验证接口建议加 `-H "Accept: application/json"` 否则 DRF 返回可浏览 HTML。
+- 面试准备见 [docs/interview_prep.md](docs/interview_prep.md)（简历描述、亮点话术、常见追问）。

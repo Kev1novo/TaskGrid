@@ -28,9 +28,13 @@ POST /api/v1/tasks/
 
 - **状态机收口**：`Task.transit()` 是唯一改状态入口，非法转移抛 ValueError，杜绝状态乱飞
 - **调度策略**：`select_node(strategy)` 策略模式，least_loaded 按 CPU/内存选节点；心跳超 60s 自动离线，故障任务可重新调度
+- **四级优先级**：critical/high/default/low 四队列路由，紧急任务优先消费
+- **运行中取消**：`cancel_requested_at` 标记 + executor 轮询检测 → 强杀 Docker 容器，异步生效
 - **沙箱四层隔离**：非 root 用户 + 只读文件系统（仅 `/tmp` 可写）+ 禁用网络 + 资源限制（mem 256m / 1 CPU / 64 进程 / 超时 30s），OOM 检测（退出码 137）
 - **降级设计**：ES 失败只记日志，绝不影响任务主流程——辅助系统不能拖垮关键路径
-- **集群化部署**：web/worker/nginx/PG/Redis/ES 全容器化编排，worker 容器挂载宿主 docker.sock 起沙箱（Docker-out-of-Docker）
+- **集群化部署**：web/worker/nginx/PG/Redis/ES 全容器化编排，worker 容器挂载宿主 docker.sock 起沙箱（Docker-out-of-Docker）。线上 2GB 内存去掉了 ES
+
+线上演示：`http://123.207.204.108:8080`（腾讯云 2C2G VPS）
 
 ## 快速开始
 
@@ -72,7 +76,7 @@ scripts\start_prod.bat
 ## 测试与代码规范
 
 ```bash
-pytest                              # 77 个用例，覆盖率 91%
+pytest                              # 85 个用例，覆盖率 90%
 black . && isort . && flake8 .      # 代码规范检查
 pre-commit run --all-files          # 提交前钩子
 ```
