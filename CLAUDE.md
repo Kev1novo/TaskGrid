@@ -2,7 +2,7 @@
 
 ## 思考语言
 
-**所有内部推理、思考过程必须使用中文。**
+**每次思考（包括 thinking 标签内的全部内容）必须用中文，禁止英文思考。代码、命令、变量名、文件路径除外。**
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 

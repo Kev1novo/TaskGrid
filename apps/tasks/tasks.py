@@ -147,3 +147,16 @@ def execute_task(self, task_id):
         # 注意：只对基础设施异常（DB/Redis/Docker 挂）重试，用户代码报错不会进这个分支
         if self.request.retries < self.max_retries:
             raise self.retry(exc=exc)
+
+
+@shared_task
+def cleanup_old_tasks(days=30, batch_size=500):
+    """定时清理 N 天前的终态任务（Celery Beat 每天凌晨调用）。
+    封装管理命令 cleanuptasks，失败只记日志不重试——
+    清理任务不是关键路径，下次调度自然会再跑。"""
+    from django.core.management import call_command
+
+    try:
+        call_command("cleanup_old_tasks", days=days, batch_size=batch_size)
+    except Exception:
+        logger.exception("Scheduled cleanup failed")

@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: taskgrid
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/taskgrid
+      REDIS_URL: redis://localhost:6379/0
+      ELASTICSEARCH_URL: http://localhost:9200
+      DJANGO_SETTINGS_MODULE: config.settings.test
+      SECRET_KEY: ci-test-secret-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          # pywin32 不兼容 Linux，跳过
+          grep -v "pywin32" requirements.txt | pip install -r /dev/stdin
+          pip install black isort flake8
+
+      - name: Run migrations
+        run: python manage.py migrate
+
+      - name: Run pytest
+        run: pytest --no-cov -v
+
+      - name: Check formatting (black)
+        run: black --check --diff .
+
+      - name: Check imports (isort)
+        run: isort --check --diff .
+
+      - name: Lint (flake8)
+        run: flake8 .

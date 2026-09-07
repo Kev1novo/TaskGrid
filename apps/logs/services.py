@@ -132,3 +132,16 @@ def _source(hit):
     src["_id"] = hit["_id"]  # 文档 ID
     src["_score"] = hit.get("_score")  # 相关度分数（全文搜索才有意义）
     return src
+
+
+def delete_task_logs(task_ids):
+    """批量删除指定任务的 ES 日志（降级设计：失败只记日志）。"""
+    if not task_ids:
+        return
+    try:
+        get_client().delete_by_query(
+            index=settings.ELASTICSEARCH_INDEX,
+            body={"query": {"terms": {"task_id": [str(tid) for tid in task_ids]}}},
+        )
+    except Exception:
+        logger.exception("Failed to delete ES logs for %d tasks", len(task_ids))

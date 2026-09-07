@@ -8,8 +8,8 @@ from .models import Node
 from .serializers import NodeSerializer
 
 
-class NodeViewSet(viewsets.ModelViewSet):
-    """节点管理（仅管理员）"""
+class NodeViewSet(viewsets.ReadOnlyModelViewSet):
+    """节点管理（仅管理员，只读——节点由 worker 心跳自动注册）。"""
 
     queryset = Node.objects.all()
     serializer_class = NodeSerializer
