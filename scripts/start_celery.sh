@@ -6,9 +6,9 @@ cd "$(dirname "$0")/.."
 .venv/Scripts/celery -A config worker -l info -P solo &
 WORKER_PID=$!
 
-.venv/Scripts/celery -A config flower --port=5555 --basic_auth=admin:taskgrid-flower &
+FLOWER_PASSWORD="${FLOWER_PASSWORD:-taskgrid-flower}"
+.venv/Scripts/celery -A config flower --port=5555 --basic_auth="admin:${FLOWER_PASSWORD}" &
 FLOWER_PID=$!
 
 echo "Worker PID: $WORKER_PID, Flower PID: $FLOWER_PID"
-echo "Flower: http://127.0.0.1:5555 (admin / taskgrid-flower)"
-wait
+echo "Flower: http://127.0.0.1:5555 (admin / \$FLOWER_PASSWORD)"

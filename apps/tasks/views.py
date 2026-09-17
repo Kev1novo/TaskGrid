@@ -1,3 +1,6 @@
+import logging
+
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -15,6 +18,8 @@ from .serializers import (
 )
 from .tasks import execute_task
 
+logger = logging.getLogger(__name__)
+
 # Priority → Celery 队列映射（4 级，与 celery.py 中的 Queue 定义对齐）
 _QUEUE_MAP = {
     Task.Priority.LOW: "low",
@@ -29,6 +34,8 @@ def _dispatch_task(user, name, task_type, code, params, priority):
     被 create() 和 retry() 共用——两者调度逻辑完全相同，只差在 Task 字段来源不同。
     """
     node = select_node()
+    if node is None:
+        logger.warning("没有可用在线节点，任务将排队等待 worker 上线")
     task = Task.objects.create(
         name=name,
         task_type=task_type,
@@ -111,6 +118,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         return obj
 
     @action(detail=True, methods=["post"], url_path="status")
+    @transaction.atomic
     def update_status(self, request, pk=None):
         """手动更新任务状态（比如 worker 执行完回调改状态）。
         注意：状态变更必须走 transit()，非法跳转会返回 400。
@@ -140,6 +148,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         return Response(TaskSerializer(task).data)
 
     @action(detail=True, methods=["post"], url_path="cancel")
+    @transaction.atomic
     def cancel(self, request, pk=None):
         """取消任务。
 
@@ -156,7 +165,11 @@ class TaskViewSet(viewsets.ModelViewSet):
         self.check_object_permissions(self.request, task)
 
         if task.status == Task.Status.RUNNING:
-            # 已经请求过取消了，直接返回当前状态（幂等）
+            if task.cancel_requested_at:
+                return Response(
+                    {"detail": "已经请求过取消，等待 worker 处理中"},
+                    status=status.HTTP_202_ACCEPTED,
+                )
             task.cancel_requested_at = timezone.now()
             task.save(update_fields=["cancel_requested_at", "updated_at"])
             return Response(

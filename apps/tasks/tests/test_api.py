@@ -154,3 +154,52 @@ def test_retry_other_denied(auth_client, user):
     )
     resp = auth_client.post(f"{TASKS}{task.id}/retry/")
     assert resp.status_code == 404
+
+
+def test_create_no_node_still_creates(auth_client, user, monkeypatch):
+    """无可用节点时任务仍创建成功，worker_id 为空，排队等待 worker 上线。"""
+    monkeypatch.setattr("apps.tasks.views.select_node", lambda strategy="least_loaded": None)
+    monkeypatch.setattr(
+        "apps.tasks.views.execute_task.apply_async", lambda args, queue=None, **kw: None
+    )
+    resp = auth_client.post(TASKS, {"name": "t", "code": "print(1)"}, format="json")
+    assert resp.status_code == 201
+    assert resp.data["worker_id"] == ""
+
+
+def test_cancel_running_idempotent(auth_client, user):
+    """重复取消同一个 RUNNING 任务，第二次返回 202 且 cancel_requested_at 保持不变。"""
+    task = Task.objects.create(name="t", owner=user, code="print(1)", status=Task.Status.RUNNING)
+    resp1 = auth_client.post(f"{TASKS}{task.id}/cancel/")
+    assert resp1.status_code == 202
+    task.refresh_from_db()
+    first_marker = task.cancel_requested_at
+
+    resp2 = auth_client.post(f"{TASKS}{task.id}/cancel/")
+    assert resp2.status_code == 202
+    task.refresh_from_db()
+    assert task.cancel_requested_at == first_marker
+
+
+def test_throttle_user(auth_client, monkeypatch):
+    """已认证用户超过限流后返回 429。"""
+    from rest_framework.throttling import UserRateThrottle
+
+    original = UserRateThrottle.allow_request
+
+    def throttled(self, request, view):
+        throttled.calls += 1
+        if throttled.calls >= 2:
+            self.history = [0]
+            self.wait = lambda: 60
+            return False
+        return original(self, request, view)
+
+    throttled.calls = 0
+
+    monkeypatch.setattr(UserRateThrottle, "allow_request", throttled)
+
+    resp1 = auth_client.get(TASKS)
+    assert resp1.status_code == 200
+    resp2 = auth_client.get(TASKS)
+    assert resp2.status_code == 429

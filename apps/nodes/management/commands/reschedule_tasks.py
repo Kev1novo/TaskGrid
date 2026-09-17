@@ -29,6 +29,8 @@ class Command(BaseCommand):
 
         rescheduled = 0
         for task in stuck:
+            # 直接赋值绕过 Task.transit()：transit 不允许 RUNNING → PENDING，
+            # 但重新调度恰好需要这个转移（节点已离线，必须复位状态让其他 worker 接手）。
             task.status = Task.Status.PENDING
             task.worker_id = ""
             task.error_message = f"{timezone.now():%Y-%m-%d %H:%M:%S} 节点离线，任务重新调度"

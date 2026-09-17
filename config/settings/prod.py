@@ -16,9 +16,9 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS")  # noqa: F405
 DATABASES = {"default": env.db_url("DATABASE_URL")}  # noqa: F405
 
 # ——— HTTPS 安全 ———
-# 生产环境必须走 HTTPS：nginx 做 TLS 终止，Django 信任代理头
+# 线上腾讯云暂无 TLS，默认关闭 SSL 重定向；有 TLS 时设置环境变量 SECURE_SSL_REDIRECT=true
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
-SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=True)  # noqa: F405
-SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=31536000)  # noqa: F405
+SECURE_SSL_REDIRECT = env.bool("SECURE_SSL_REDIRECT", default=False)  # noqa: F405
+SECURE_HSTS_SECONDS = env.int("SECURE_HSTS_SECONDS", default=0)  # noqa: F405
 SESSION_COOKIE_SECURE = SECURE_SSL_REDIRECT
 CSRF_COOKIE_SECURE = SECURE_SSL_REDIRECT

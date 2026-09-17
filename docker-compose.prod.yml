@@ -3,7 +3,7 @@ name: taskgrid-prod
 # 应用服务共用环境（web/worker 一致），YAML 锚点避免复制两份
 x-app-env: &app-env
   DJANGO_SETTINGS_MODULE: config.settings.prod
-  SECRET_KEY: ${SECRET_KEY:-change-me-taskgrid-prod-key}
+  SECRET_KEY: ${SECRET_KEY}
   DEBUG: "False"
   ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
   DATABASE_URL: postgres://postgres:taskgridprod123@postgres:5432/taskgrid
